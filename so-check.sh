@@ -1,7 +1,7 @@
 #!/bin/bash
 # so-check v0.0.1
-# Checks shared objects and executables in $PATH
-# for prvilege escalation vectors
+# Checks system shared objects and executables in $PATH
+# for privilege escalation vectors
 #
 # Related reading:
 # https://www.win.tue.nl/~aeb/linux/hh/hh-8.html
@@ -63,15 +63,42 @@ if ! command_exists head; then
   error "head is not in \$PATH!"
 fi
 
+if ! command_exists dirname; then
+  error "dirname is not in \$PATH!"
+fi
+
+if ! command_exists realpath; then
+  error "realpath is not in \$PATH!"
+fi
+
 objdump_rpath() {
   path="${1}"
 
   rpath=$(objdump -x "${path}" 2>/dev/null | grep RPATH | sed 's/RPATH\s*//g' | sed -e 's/^[[:space:]]*//')
-  if [ ! -z $rpath ]; then
+  if [ ! -z "${rpath}" ]; then
     verbose "${path} - RPATH: ${rpath}"
-    if [ -w "${rpath}" ]; then
-      issue "${path} RPATH ${rpath} is writable!"
-    fi
+
+    while read -r line; do
+      if [[ "${line}" =~ "\$ORIGIN" ]]; then
+        p="$(dirname "${path}")/$(echo "${line}" | sed -e 's/\$ORIGIN//g')"
+      else
+        p="${line}"
+      fi
+
+      if [ -z "${p}" ]; then
+        issue "${path} RPATH contains empty path"
+        continue
+      fi
+
+      if [ "${p}" = "." ]; then
+        issue "${path} RPATH contains working directory '.'"
+        continue
+      fi
+
+      if [ -w "${p}" ]; then
+        issue "${path} RPATH ${p} is writable!"
+      fi
+    done <<< "${rpath//:/$'\n'}"
   fi
 }
 
@@ -81,9 +108,28 @@ objdump_runpath() {
   runpath=$(objdump -x "${path}" 2>/dev/null | grep RUNPATH | sed 's/RUNPATH\s*//g' | sed -e 's/^[[:space:]]*//')
   if [ ! -z "${runpath}" ]; then
     verbose "${path} - RUNPATH: ${runpath}"
-    if [ -w "${runpath}" ]; then
-      issue "${path} RUNPATH ${runpath} is writable!"
-    fi
+
+    while read -r line; do
+      if [[ "${line}" =~ "\$ORIGIN" ]]; then
+        p="$(dirname "${path}")/$(echo "${line}" | sed -e 's/\$ORIGIN//g')"
+      else
+        p="${line}"
+      fi
+
+      if [ -z "${p}" ]; then
+        issue "${path} RUNPATH contains empty path"
+        continue
+      fi
+
+      if [ "${p}" = "." ]; then
+        issue "${path} RUNPATH contains working directory '.'"
+        continue
+      fi
+
+      if [ -w "${p}" ]; then
+        issue "${path} RUNPATH ${p} is writable!"
+      fi
+    done <<< "${runpath//:/$'\n'}"
   fi
 }
 
@@ -126,7 +172,7 @@ search_path() {
   done < <(find "${path}" -maxdepth 1 -executable -print0 2>/dev/null)
 
   for ((i=0; i<${#array[@]}; i++)); do
-    f="${array[$i]}"
+    f="$(realpath "${array[$i]}")"
 
     verbose "${f}"
 
@@ -208,5 +254,3 @@ while read -r line; do
   search_path $p
   echo
 done <<< "${PATH//:/$'\n'}"
-exit
-
